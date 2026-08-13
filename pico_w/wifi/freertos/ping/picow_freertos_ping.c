@@ -40,9 +40,10 @@
 #define QUIET_TIME (configTICK_RATE_HZ * 4)
 
 static int16_t sample_buffers[2][NUM_SAMPLES];
-static uint64_t sample_square_sum[2];
+//static uint64_t sample_square_sum[2];
 static int sample_last_buffer = 0;
 static SemaphoreHandle_t sample_semaphore;
+static TickType_t delta_inner;
 
 void adc_task(__unused void *params) {
     printf("started adc_task\n");
@@ -54,16 +55,23 @@ void adc_task(__unused void *params) {
     adc_set_clkdiv(48000000/SAMPLE_RATE - 1);
 
     printf("adc_task enter loop\n");
+    TickType_t bufstart = xTaskGetTickCount();
+    TickType_t last = xTaskGetTickCount();
     for (;;) {
         for (int buf = 0; buf < 2; buf++) {
+            TickType_t t = xTaskGetTickCount();
+            delta_inner = t - bufstart;
+            bufstart = t;
             //printf("adc_task buf %i\n", buf);
-            uint64_t sum = 0;
+            //uint64_t sum = 0;
             for (int x = 0; x < NUM_SAMPLES; x++) {
+                // pipeline ADC with other tasks
                 hw_set_bits(&adc_hw->cs, ADC_CS_START_ONCE_BITS);
 
                 // yield
-                vTaskDelay(1);
+                vTaskDelayUntil(&last, configTICK_RATE_HZ / SAMPLE_RATE);
 
+                // wait for conversion to finish
                 while (!(adc_hw->cs & ADC_CS_READY_BITS));
 
                 // 12-bit result
@@ -72,10 +80,10 @@ void adc_task(__unused void *params) {
                 sample -= (1 << 11);
                 sample *= (1 << 4);
                 sample_buffers[buf][x] = sample;
-                sum += sample*sample;
+                //sum += sample*sample;
             }
 
-            sample_square_sum[buf] = sum;
+            //sample_square_sum[buf] = sum;
             sample_last_buffer = buf;
             xSemaphoreGive(sample_semaphore);
         }
@@ -102,7 +110,10 @@ void main_task(__unused void *params) {
     ping_init(&ping_addr);*/
 
     printf("cyw43_arch_enable_ap_mode\n");
+    // sometimes this hangs. I am not sure why
+    // forcing the sampling task to wait via the semaphore does not work
     cyw43_arch_enable_ap_mode("hackerrave", "hackerrave", CYW43_AUTH_WPA2_AES_PSK);
+    printf("cyw43_arch_enable_ap_mode done\n");
 
 #if LWIP_IPV6
 #define IP(x) ((x).u_addr.ip4)
@@ -139,15 +150,41 @@ void main_task(__unused void *params) {
     TickType_t quiettime = xLastWakeTime + QUIET_TIME;
 
     printf("main_task enter loop\n");
+    float dc = 0;
     for (int xx = 0;;) {
         //printf("main_task xSemaphoreTake\n");
         if (xSemaphoreTake(sample_semaphore, portMAX_DELAY) == pdTRUE) {
+            TickType_t t = xTaskGetTickCount();
+            TickType_t delta = t - xLastWakeTime;
+            if (delta_inner != NUM_SAMPLES * configTICK_RATE_HZ / SAMPLE_RATE) {
+                printf("delta = %i, inner = %i\n", delta, delta_inner);
+            }
+            xLastWakeTime = t;
             //printf("main_task xSemaphoreTake OK\n");
             xx++;
             // TODO: don't reuse pbuf?
             struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, 2*NUM_SAMPLES, PBUF_RAM);
             if (!p) {
                 printf("pbuf NULL?\n");
+            }
+
+            uint64_t sample_square_sum = 0;
+            for (int x = 0; x < NUM_SAMPLES; x++) {
+                // 1 Hz low-pass filter -> DC offset
+                dc = dc * (SAMPLE_RATE-1) / SAMPLE_RATE;
+                dc += sample_buffers[sample_last_buffer][x] / (float)SAMPLE_RATE;
+
+                // subtract DC offset -> 1 Hz highpass
+                float highpass = sample_buffers[sample_last_buffer][x] - dc;
+                if (highpass < -32768) {
+                    highpass = -32768;
+                } else if (highpass > 32767) {
+                    highpass = 32767;
+                }
+
+                // replace original samples
+                sample_buffers[sample_last_buffer][x] = highpass;
+                sample_square_sum += sample_buffers[sample_last_buffer][x]*sample_buffers[sample_last_buffer][x];
             }
 
             /* static int t = 0;
@@ -158,9 +195,9 @@ void main_task(__unused void *params) {
                 samples[x] = 16000*(1+sin(2*M_PI*t/(float)SAMPLE_RATE))*sin(M_PI*t/(float)SAMPLE_RATE*1000);
             }*/
 
-            uint64_t s = sample_square_sum[sample_last_buffer] / NUM_SAMPLES;
+            uint64_t s = sample_square_sum / NUM_SAMPLES;
             s = sqrt(s);
-            //printf("sample_square_sum[sample_last_buffer] = %5"PRIu64"\n", s);
+            //printf("sample_square_sum[sample_last_buffer] = %5"PRIu64" dc=%f\n", s, dc);
             static bool quiet = false;
             if (s < 400) {
                 // quiet
@@ -203,7 +240,7 @@ void main_task(__unused void *params) {
                 // not much to do as LED is in another task, and we're using RAW (callback) lwIP API
                 //printf("gpio_put %i\n", x & 1);
                 //gpio_put(LED_GPIO, x & 1);
-                cyw43_gpio_set(&cyw43_state, LED_GPIO, (xx >> 4) & 1);
+                cyw43_gpio_set(&cyw43_state, LED_GPIO, (xx >> (quiet ? 6 : 4)) & 1);
             }
 
             //vTaskDelay(NUM_SAMPLES * configTICK_RATE_HZ / 48000);
