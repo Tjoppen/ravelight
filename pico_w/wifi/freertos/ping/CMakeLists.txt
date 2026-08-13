@@ -1,7 +1,7 @@
 if (EXISTS ${PICO_LWIP_CONTRIB_PATH}/apps/ping/ping.c)
     add_executable(picow_freertos_ping_nosys
             picow_freertos_ping.c
-            ${PICO_LWIP_CONTRIB_PATH}/apps/ping/ping.c
+            ${CMAKE_CURRENT_LIST_DIR}/../../access_point/dhcpserver/dhcpserver.c
             )
     target_compile_definitions(picow_freertos_ping_nosys PRIVATE
             WIFI_SSID=\"${WIFI_SSID}\"
@@ -11,19 +11,22 @@ if (EXISTS ${PICO_LWIP_CONTRIB_PATH}/apps/ping/ping.c)
             ${CMAKE_CURRENT_LIST_DIR}
             ${CMAKE_CURRENT_LIST_DIR}/.. # for our common FreeRTOSConfig
             ${CMAKE_CURRENT_LIST_DIR}/../.. # for our common lwipopts
-            ${PICO_LWIP_CONTRIB_PATH}/apps/ping
+            ${CMAKE_CURRENT_LIST_DIR}/../../access_point/dhcpserver
             )
     target_link_libraries(picow_freertos_ping_nosys
             pico_cyw43_arch_lwip_threadsafe_background
             pico_stdlib
             pico_lwip_iperf
             FreeRTOS-Kernel-Heap4 # FreeRTOS kernel and dynamic heap
+            hardware_adc
             )
+    pico_enable_stdio_usb(picow_freertos_ping_nosys 1)
+    pico_enable_stdio_uart(picow_freertos_ping_nosys 0)
     pico_add_extra_outputs(picow_freertos_ping_nosys)
 
     add_executable(picow_freertos_ping_sys
             picow_freertos_ping.c
-            ${PICO_LWIP_CONTRIB_PATH}/apps/ping/ping.c
+            ${CMAKE_CURRENT_LIST_DIR}/../../access_point/dhcpserver/dhcpserver.c
             )
     target_compile_definitions(picow_freertos_ping_sys PRIVATE
             WIFI_SSID=\"${WIFI_SSID}\"
@@ -36,13 +39,16 @@ if (EXISTS ${PICO_LWIP_CONTRIB_PATH}/apps/ping/ping.c)
             ${CMAKE_CURRENT_LIST_DIR}
             ${CMAKE_CURRENT_LIST_DIR}/.. # for our common FreeRTOSConfig
             ${CMAKE_CURRENT_LIST_DIR}/../.. # for our common lwipopts
-            ${PICO_LWIP_CONTRIB_PATH}/apps/ping
+            ${CMAKE_CURRENT_LIST_DIR}/../../access_point/dhcpserver
             )
     target_link_libraries(picow_freertos_ping_sys
             pico_cyw43_arch_lwip_sys_freertos
             pico_stdlib
             pico_lwip_iperf
             FreeRTOS-Kernel-Heap4 # FreeRTOS kernel and dynamic heap
+            hardware_adc
             )
+    pico_enable_stdio_usb(picow_freertos_ping_sys 1)
+    pico_enable_stdio_uart(picow_freertos_ping_sys 0)
     pico_add_extra_outputs(picow_freertos_ping_sys)
 endif()
