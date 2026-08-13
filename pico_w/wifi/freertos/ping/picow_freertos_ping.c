@@ -9,6 +9,7 @@
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
 #include "hardware/adc.h"
+#include "hardware/watchdog.h"
 
 #include "lwip/ip4_addr.h"
 
@@ -241,6 +242,7 @@ void main_task(__unused void *params) {
                 //printf("gpio_put %i\n", x & 1);
                 //gpio_put(LED_GPIO, x & 1);
                 cyw43_gpio_set(&cyw43_state, LED_GPIO, (xx >> (quiet ? 6 : 4)) & 1);
+                watchdog_update();
             }
 
             //vTaskDelay(NUM_SAMPLES * configTICK_RATE_HZ / 48000);
@@ -278,6 +280,10 @@ void vLaunch( void) {
 int main( void )
 {
     stdio_init_all();
+    if (watchdog_enable_caused_reboot()) {
+        printf("Rebooted by watchdog\n");
+    }
+    watchdog_enable(5000, 1);
 
     /* Configure the hardware ready to run the demo. */
     const char *rtos_name;
