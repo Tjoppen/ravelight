@@ -39,8 +39,9 @@
 #define NUM_SAMPLES 480
 // generate idle signal if audio has been quiet for this long
 #define QUIET_TIME (configTICK_RATE_HZ * 4)
+#define NUM_BUFFERS 2
 
-static int16_t sample_buffers[2][NUM_SAMPLES];
+static int16_t sample_buffers[NUM_BUFFERS][NUM_SAMPLES];
 //static uint64_t sample_square_sum[2];
 static int sample_last_buffer = 0;
 static SemaphoreHandle_t sample_semaphore;
@@ -59,7 +60,7 @@ void adc_task(__unused void *params) {
     TickType_t bufstart = xTaskGetTickCount();
     TickType_t last = xTaskGetTickCount();
     for (;;) {
-        for (int buf = 0; buf < 2; buf++) {
+        for (int buf = 0; buf < NUM_BUFFERS; buf++) {
             TickType_t t = xTaskGetTickCount();
             delta_inner = t - bufstart;
             bufstart = t;
@@ -258,7 +259,7 @@ void main_task(__unused void *params) {
 void vLaunch( void) {
     TaskHandle_t task;
 
-    sample_semaphore = xSemaphoreCreateBinary();
+    sample_semaphore = xSemaphoreCreateCounting(NUM_BUFFERS, 0);
     if (!sample_semaphore) {
         printf("NULL semaphore..\n");
     }
