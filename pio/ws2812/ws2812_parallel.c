@@ -33,6 +33,10 @@
 // 5 meters = 300 pixles ≃ 100 Hz
 #define WS2812_PIN_BASE 2
 
+#define LOG2 0.69314718056
+#define BASS_CUTOFF     ((int)( 100 / LOG2))    // 100 Hz seems about right with a second order low-pass
+#define MIDRANGE_CUTOFF ((int)(4000 / LOG2))
+
 // Check the pin is compatible with the platform
 #if WS2812_PIN_BASE >= NUM_BANK0_GPIOS
 #error Attempting to use a pin>=32 on a platform that does not support it
@@ -310,7 +314,10 @@ void output_strips_dma(value_bits_t *bits, uint value_length) {
 
 // earlier versions had this as a ring buffer,
 // but there's really no need to
-volatile int16_t samples_flat[SAMPLES_SIZE];
+volatile int16_t samples_raw[SAMPLES_SIZE];
+volatile int16_t samples_bass[SAMPLES_SIZE];
+volatile int16_t samples_midrange[SAMPLES_SIZE];
+volatile int16_t samples_high[SAMPLES_SIZE];
 volatile int samples_count = 0;
 // there's no need for a mutex if we're only using one core
 //auto_init_mutex(samples_mutex);
@@ -357,7 +364,32 @@ static void samples_push(const int16_t *samples_in, int n) {
             n = capacity;
         }
         if (n > 0) {
-            memcpy((void*)&samples_flat[samples_count], samples_in, n*sizeof(*samples_flat));
+            memcpy((void*)&samples_raw[samples_count], samples_in, n*sizeof(*samples_raw));
+            static int32_t bass = 0, bass2 = 0, midrange = 0, midrange2 = 0;
+            for (int x = 0; x < n; x++) {
+                // TODO: saturating adds and subs?
+
+                // Low-pass filter -> bass
+                bass  -= bass / (SAMPLE_RATE / BASS_CUTOFF);
+                bass  += (samples_in[x] * (1 << 16)) / (SAMPLE_RATE / BASS_CUTOFF);
+                // 2nd order filter
+                bass2 -= bass2 / (SAMPLE_RATE / BASS_CUTOFF);
+                bass2 += bass  / (SAMPLE_RATE / BASS_CUTOFF);
+                int16_t bass_rounded = bass2 / (1 << 16);
+                samples_bass[samples_count+x] = bass_rounded;
+
+                // subtract bass -> mids and highs
+                int16_t midhigh = samples_in[x] - bass_rounded;
+
+                midrange  -= midrange / (SAMPLE_RATE / MIDRANGE_CUTOFF);
+                midrange  += ( midhigh * (1 << 16)) / (SAMPLE_RATE / MIDRANGE_CUTOFF);
+                // 2nd order filter
+                midrange2 -= midrange2 / (SAMPLE_RATE / MIDRANGE_CUTOFF);
+                midrange2 += midrange  / (SAMPLE_RATE / MIDRANGE_CUTOFF);
+                int16_t midrange_rounded = midrange2 / (1 << 16);
+                samples_midrange[samples_count+x] = midrange_rounded;
+                samples_high[samples_count+x] = midhigh - midrange_rounded;
+            }
             samples_count += n;
         }
     }
@@ -440,7 +472,10 @@ static void samples_pop6(int n6) {
         if (n < samples_count) {
             // not memcpy() because of overlap
             //printf("n < samples_count %i samples\n", samples_count - n);
-            memmove((void*)samples_flat, (void*)&samples_flat[n], (samples_count - n)*sizeof(*samples_flat));
+            memmove((void*)samples_raw,      (void*)&samples_raw[n],      (samples_count - n)*sizeof(*samples_raw));
+            memmove((void*)samples_bass,     (void*)&samples_bass[n],     (samples_count - n)*sizeof(*samples_bass));
+            memmove((void*)samples_midrange, (void*)&samples_midrange[n], (samples_count - n)*sizeof(*samples_midrange));
+            memmove((void*)samples_high,     (void*)&samples_high[n],     (samples_count - n)*sizeof(*samples_high));
         }
 
         samples_count -= n;
@@ -455,13 +490,13 @@ static void recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t
     //printf("recv: %p %i %i\n", p, p->len, p->tot_len);
     struct pbuf *p_in = p;
     //static int cnt = 255;
-    //samples_push(p->payload, p->len / sizeof(*samples_flat));
+    //samples_push(p->payload, p->len / sizeof(*samples_raw));
     int packets = 0, bytes = 0;
     for (;;) {
         packets++;
         bytes += p->len;
         //printf("push %p %i %i\n", p->payload, p->len, p->tot_len);
-        samples_push(p->payload, p->len / sizeof(*samples_flat));
+        samples_push(p->payload, p->len / sizeof(*samples_raw));
         if (p->len == p->tot_len) {
             break;
         }
@@ -472,7 +507,7 @@ static void recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t
         buf[x] = x*x;
     }
     //cnt = (cnt + 16) % 256;
-    //samples_push(buf, 1024); //p->len / sizeof(*samples_flat));
+    //samples_push(buf, 1024); //p->len / sizeof(*samples_raw));
     samples_count = 2048;*/
     pbuf_free(p_in);
     if (packets > 1) {
@@ -504,16 +539,20 @@ static bool samples_topper_upper(repeating_timer_t *rt) {
 }
 
 
-static int amplitude(void) {
+static int amplitude2(volatile int16_t *buffer) {
     uint64_t amp = 0;
     for (int x = 0; x < NUM_PIXELS; x++) {
-        amp += samples_flat[x] * samples_flat[x];
+        amp += buffer[x] * buffer[x];
     }
     amp /= NUM_PIXELS;
     amp = sqrt(amp);
     int ret = amp / 1024;
     if (ret > 255) ret = 255;
     return ret;
+}
+
+static int amplitude() {
+    return amplitude2(samples_raw);
 }
 
 static void pp2rgb(int pp, int *r, int *g, int *b) {
@@ -528,7 +567,8 @@ static void pp2rgb(int pp, int *r, int *g, int *b) {
 
 static void amplitude_general(int pp) {
     samples_wait(NUM_PIXELS);
-    int amp = amplitude();
+    // react to bass only
+    int amp = amplitude2(samples_bass);
     int r, g, b;
     pp2rgb(pp, &r, &g, &b);
 
@@ -602,24 +642,6 @@ static void sparkles(int pp) {
 
 // TODO: waveform
 // TODO: lågpassfiltrerat ljud, amplitud per sample, ut på slingorna
-static void sparkles(int pp) {
-    int amp = amplitude();
-
-    int r, g, b;
-    pp2rgb(pp, &r, &g, &b);
-    for (int x = 0; x < NUM_PIXELS; x++) {
-        int f = rand() % 100;
-        if (f <= 1) {
-            f = 1;
-        } else {
-            f = 0;
-        }
-        put_pixel(urgb_u32(r * amp * f, g * amp * f, b * amp * f));
-    }
-
-    samples_pop6(NUM_PIXELS / 6);
-}
-
 
 static const struct {
     void (*fn)(int);
