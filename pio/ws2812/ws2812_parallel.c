@@ -539,20 +539,20 @@ static bool samples_topper_upper(repeating_timer_t *rt) {
 }
 
 
-static int amplitude2(volatile int16_t *buffer) {
+static int amplitude2(volatile int16_t *buffer, float gain) {
     uint64_t amp = 0;
     for (int x = 0; x < NUM_PIXELS; x++) {
         amp += buffer[x] * buffer[x];
     }
     amp /= NUM_PIXELS;
     amp = sqrt(amp);
-    int ret = amp / 1024;
+    int ret = (amp * gain) / 1024;
     if (ret > 255) ret = 255;
     return ret;
 }
 
 static int amplitude() {
-    return amplitude2(samples_raw);
+    return amplitude2(samples_raw, 1);
 }
 
 static void pp2rgb(int pp, int *r, int *g, int *b) {
@@ -568,12 +568,25 @@ static void pp2rgb(int pp, int *r, int *g, int *b) {
 static void amplitude_general(int pp) {
     samples_wait(NUM_PIXELS);
     // react to bass only
-    int amp = amplitude2(samples_bass);
+    int amp = amplitude2(samples_bass, 10);
     int r, g, b;
     pp2rgb(pp, &r, &g, &b);
 
     for (int x = 0; x < NUM_PIXELS; x++) {
         put_pixel(urgb_u32(r * amp, g * amp, b * amp));
+    }
+
+    samples_pop6(NUM_PIXELS / 6);
+}
+
+static void amplitude_mixed(int pp) {
+    samples_wait(NUM_PIXELS);
+    // react to bass only
+    int amp  = amplitude2(samples_bass, 10);
+    int amp2 = amplitude2(samples_raw,  1);
+
+    for (int x = 0; x < NUM_PIXELS; x++) {
+        put_pixel(urgb_u32(amp, amp2, 0));
     }
 
     samples_pop6(NUM_PIXELS / 6);
@@ -655,6 +668,7 @@ static const struct {
     {amplitude_purple},*/
 
     {amplitude_general},
+    {amplitude_mixed},
     {pulses},
     {sparkles},
 };
