@@ -653,8 +653,29 @@ static void sparkles(int pp) {
     samples_pop6(NUM_PIXELS / 6);
 }
 
-// TODO: waveform
+
+static void waveform(int pp) {
+    samples_wait(NUM_PIXELS);
+
+    int r, g, b;
+    pp2rgb(pp, &r, &g, &b);
+    for (int x = 0; x < NUM_PIXELS; x++) {
+        int s = samples_raw[x];
+        s /= 128;
+        if (s < 0) {
+            s = -s;
+        }
+        if (s > 255) {
+            s = 255;
+        }
+        put_pixel(urgb_u32(r * s, g * s, b * s));
+    }
+
+    samples_pop6(NUM_PIXELS / 6);
+}
+
 // TODO: lågpassfiltrerat ljud, amplitud per sample, ut på slingorna
+// TODO: walsh-hadamard istf fft
 
 static const struct {
     void (*fn)(int);
@@ -671,6 +692,7 @@ static const struct {
     {amplitude_mixed},
     {pulses},
     {sparkles},
+    {waveform},
 };
 
 int main() {
