@@ -674,7 +674,23 @@ static void waveform(int pp) {
     samples_pop6(NUM_PIXELS / 6);
 }
 
-// TODO: lågpassfiltrerat ljud, amplitud per sample, ut på slingorna
+static void train(int pp) {
+    samples_wait(NUM_PIXELS);
+    // react to bass only
+    int amp = amplitude2(samples_bass, 10);
+    int r, g, b;
+    pp2rgb(pp, &r, &g, &b);
+    static uint8_t buffer[NUM_PIXELS] = {0};
+    memmove(&buffer[1], &buffer[0], (NUM_PIXELS-1)*sizeof(buffer[0]));
+    buffer[0] = amp;
+
+    for (int x = 0; x < NUM_PIXELS; x++) {
+        put_pixel(urgb_u32(r * buffer[x], g * buffer[x], b * buffer[x]));
+    }
+
+    samples_pop6(NUM_PIXELS / 6);
+}
+
 // TODO: walsh-hadamard istf fft
 
 static const struct {
@@ -693,6 +709,7 @@ static const struct {
     {pulses},
     {sparkles},
     {waveform},
+    {train},
 };
 
 int main() {
