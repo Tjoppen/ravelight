@@ -29,7 +29,14 @@
 
 #define FRAC_BITS 0
 // 800 kbps / 24 bit = 33 1/3 kHz
+#if 1
 #define NUM_PIXELS (60 /* length of test strip */ * 5 /* number of meters */)
+#define NUM_PIXELS_LOG2 9   // ceil(log2(NUM_PIXELS))
+#else
+#define NUM_PIXELS 64
+#define NUM_PIXELS_LOG2 6
+#endif
+#define NUM_PIXELS_POW2 (1 << NUM_PIXELS_LOG2)
 // 5 meters = 300 pixles ≃ 100 Hz
 #define WS2812_PIN_BASE 2
 
@@ -691,7 +698,61 @@ static void train(int pp) {
     samples_pop6(NUM_PIXELS / 6);
 }
 
-// TODO: walsh-hadamard istf fft
+static int bitreverse(int x) {
+    int ret = 0;
+    for (int y = 0; y < NUM_PIXELS_LOG2; y++ ) {
+        ret |= ((x >> (NUM_PIXELS_LOG2 - y - 1)) & 1) << y;
+    }
+    return ret;
+}
+
+// Walsh-Hadamard is a poor man's FFT
+static void walsh_hadamard(int pp) {
+    int num6 = (NUM_PIXELS_POW2 + 5) / 6;
+    samples_wait(num6 * 6);
+    int buffers[2][NUM_PIXELS_POW2];
+
+    for (int x = 0; x < NUM_PIXELS_POW2; x++) {
+        buffers[0][x] = samples_raw[x];
+    }
+
+    int h = 1;
+    while (h < NUM_PIXELS_POW2) {
+        for (int i = 0; i < NUM_PIXELS_POW2; i += h * 2) {
+            for (int j = i; j < i + h; j++) {
+                int x = buffers[0][j];
+                int y = buffers[0][j + h];
+                buffers[0][j]     = x + y;
+                buffers[0][j + h] = x - y;
+            }
+        }
+        h <<= 1;
+    }
+
+    for (int x = 0; x < NUM_PIXELS_POW2; x++) {
+        int a = buffers[0][x];
+        a /= (1 << (NUM_PIXELS_LOG2/2));
+        a /= 16;
+        a /= 128;
+        if (x < 0) {
+            a = -a;
+        }
+        if (a > 255) {
+            a = 255;
+        }
+        // we could bit reverse when reading or when writing
+        // this (writing) looks better
+        buffers[1][bitreverse(x)] = a;
+    }
+
+    int r, g, b;
+    pp2rgb(pp, &r, &g, &b);
+    for (int x = 0; x < NUM_PIXELS; x++) {
+        put_pixel(urgb_u32(r * buffers[1][x], g * buffers[1][x], b * buffers[1][x]));
+    }
+
+    samples_pop6(num6);
+}
 
 static const struct {
     void (*fn)(int);
@@ -710,6 +771,7 @@ static const struct {
     {sparkles},
     {waveform},
     {train},
+    {walsh_hadamard},
 };
 
 int main() {
